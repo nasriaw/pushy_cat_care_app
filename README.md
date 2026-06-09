@@ -21,9 +21,7 @@ GRATISONGKIR (Potongan biaya kirim hingga Rp 15.000 untuk belanja di atas Rp 150
 🛠️ Prasyarat & Instalasi
 Sebelum menjalankan aplikasi, pastikan Anda telah menginstal Python (versi 3.8 ke atas) di komputer Anda.
 1. Klon Repositori
-git clone [https://github.com/username/pushy-cat-care-app.git](https://github.com/username/pushy-cat-care-app.git)
-cd pushy-cat-care-app
-
+git clone [https://github.com/nasriaw/pushy-cat-care-app.git]
 
 2. Instalasi Dependensi (Library)
 Instal seluruh paket dependensi Python yang dibutuhkan melalui pip:
