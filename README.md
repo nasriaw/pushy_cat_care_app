@@ -1,7 +1,7 @@
 # pushy_cat_care_app
 Aplikasi komunitas untuk memelihara kucing dengan lebih baik
 🐱 Pushy Cat Care App
-Pushy Cat Care App adalah aplikasi manajemen perawatan kucing cerdas yang dikembangkan oleh STIEIMA Cat Care. Aplikasi ini dirancang khusus untuk membantu para pecinta kucing (Cat Lovers) mendeteksi dini masalah kesehatan fisik kucing, memberikan panduan Pertolongan Pertama Pada Kecelakaan (P3K) guna mencegah risiko penyakit menular (zoonosis), berbelanja kebutuhan nutrisi/obat, serta terhubung dengan ekosistem dokter hewan dan komunitas terdekat.
+adalah aplikasi manajemen perawatan kucing cerdas yang dikembangkan oleh STIEIMA Cat Care. Aplikasi ini dirancang khusus untuk membantu para pecinta kucing (Cat Lovers) mendeteksi dini masalah kesehatan fisik kucing, memberikan panduan Pertolongan Pertama Pada Kecelakaan (P3K) guna mencegah risiko penyakit menular (zoonosis), berbelanja kebutuhan nutrisi/obat, serta terhubung dengan ekosistem dokter hewan dan komunitas terdekat.
 Aplikasi ini dibangun menggunakan framework Python Streamlit dengan visualisasi interaktif, simulasi AI Vision, kalkulator transaksi e-commerce dinamis, serta integrasi asisten cerdas berbasis Gemini API.
 🌟 Fitur Utama
 Aplikasi ini menyediakan dua ruang akses peran (Role Access):
