@@ -3,4 +3,4 @@ pandas
 random
 test
 requests
-python==3.12
+python==3.12.11
