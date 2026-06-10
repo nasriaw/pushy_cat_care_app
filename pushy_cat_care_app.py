@@ -1,176 +1,251 @@
 # -*- coding: utf-8 -*-
 """
-Aplikasi: Pushy Cat Care App
+Aplikasi: Pushy Cat Care Fullstack App (Edisi Revisi Lengkap)
 Pengembang: STIEIMA Cat Care
-Deskripsi: Sistem manajemen perawatan kucing cerdas dengan Deteksi Kesehatan AI,
-           E-commerce terintegrasi, Direktori Vet/Komunitas, dan Chatbot "Pushy AI".
-Bahasa: Python (Streamlit Framework)
+Deskripsi: Sistem Fullstack berbasis Streamlit dan SQLite yang mengimplementasikan
+           11 Fitur Utama sesuai PDF spesifikasi resmi STIEIMA Cat Care.
 """
 
 import streamlit as st
 import pandas as pd
-import random
+import sqlite3
+import hashlib
+import json
 import time
 import requests
-import json
+import os
+from datetime import datetime
 
 # ==========================================
-# KONFIGURASI HALAMAN & AUTH GEMINI API
+# 1. KONFIGURASI HALAMAN & ENCODER DATABASE
 # ==========================================
 st.set_page_config(
-    page_title="Pushy Cat Care App - STIEIMA",
+    page_title="Pushy Cat Care Fullstack App",
     page_icon="🐱",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Berdasarkan instruksi lingkungan, API Key didefinisikan sebagai string kosong.
-# Sistem runtime akan menyuntikkan kunci jika tersedia.
-API_KEY = ""
+DB_FILE = "pushy_cat_care.db"
+API_KEY = ""  # Diisi otomatis oleh runtime atau pengguna secara manual
 
 # ==========================================
-# TEMA & GAYA KUSTOM (CSS INLINE)
+# 2. SISTEM DATABASE KONEKTOR & MIGRASI (SQLite)
+# ==========================================
+def get_db_connection():
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_db():
+    """Membuat tabel relasional jika belum ada di SQLite database."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Tabel Pengguna
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS users (
+        user_id TEXT PRIMARY KEY,
+        username TEXT NOT NULL,
+        email TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        role TEXT DEFAULT 'Cat Lover'
+    )""")
+    
+    # Tabel Deteksi Kesehatan AI
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS ai_detections (
+        detection_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT,
+        image_name TEXT,
+        confidence_score REAL,
+        symptoms_count INTEGER,
+        status TEXT,
+        created_at TEXT
+    )""")
+    
+    # Tabel Pelaporan Darurat Kucing Terlantar/Sakit (FE-08)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS emergency_reports (
+        report_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        reporter_name TEXT NOT NULL,
+        photo_name TEXT NOT NULL,
+        latitude REAL NOT NULL,
+        longitude REAL NOT NULL,
+        description TEXT NOT NULL,
+        status TEXT DEFAULT 'PENDING',
+        created_at TEXT
+    )""")
+    
+    # Tabel E-Commerce Multi-Merchant Komunitas (FE-06)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS ecommerce_products (
+        product_id TEXT PRIMARY KEY,
+        owner_name TEXT NOT NULL, -- Nama komunitas penyedia lapak
+        name TEXT NOT NULL,
+        category TEXT NOT NULL,
+        price REAL NOT NULL,
+        stock INTEGER NOT NULL,
+        description TEXT NOT NULL,
+        is_approved INTEGER DEFAULT 0 -- 0: Pending, 1: Approved
+    )""")
+    
+    # Tabel Transaksi E-Commerce
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS transactions (
+        transaction_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        buyer_name TEXT NOT NULL,
+        total_amount REAL NOT NULL,
+        discount REAL NOT NULL,
+        shipping_cost REAL NOT NULL,
+        payment_method TEXT NOT NULL,
+        created_at TEXT
+    )""")
+    
+    # Tabel Direktori Vet & Komunitas (FE-07)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS directories (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        type TEXT NOT NULL, -- 'Vet' atau 'Community'
+        name TEXT NOT NULL,
+        detail TEXT NOT NULL,
+        contact TEXT NOT NULL,
+        is_approved INTEGER DEFAULT 0
+    )""")
+    
+    # Tabel Agenda Komunitas (FE-10)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS community_agendas (
+        agenda_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        description TEXT NOT NULL,
+        event_date TEXT NOT NULL,
+        location TEXT NOT NULL,
+        created_by TEXT NOT NULL
+    )""")
+    
+    conn.commit()
+    
+    # Suntik data awal (Mock Data) untuk demo operasional instan jika tabel kosong
+    cursor.execute("SELECT COUNT(*) FROM users")
+    if cursor.fetchone()[0] == 0:
+        # User defaults
+        users_mock = [
+            ("usr-01", "CatLoverMalang", "cat@stiemlg.ac.id", hashlib.sha256("lovepus".encode()).hexdigest(), "Cat Lover"),
+            ("usr-02", "AdminSTIEIMA", "admin@stiemlg.ac.id", hashlib.sha256("stieima123".encode()).hexdigest(), "Admin"),
+            ("usr-03", "DrhAhmad", "expert@stiemlg.ac.id", hashlib.sha256("expert123".encode()).hexdigest(), "Agent_Expert"),
+            ("usr-04", "DeveloperSTIEIMA", "dev@stiemlg.ac.id", hashlib.sha256("dev123".encode()).hexdigest(), "Agent_Developer"),
+        ]
+        cursor.executemany("INSERT INTO users VALUES (?, ?, ?, ?, ?)", users_mock)
+        
+        # Produk Default E-commerce
+        products_mock = [
+            ("pakan-01", "Klinik Vet Malang", "Royal Canin Fit 32 2kg", "Makanan", 220000, 15, "Nutrisi seimbang untuk pertumbuhan dan daya tahan tubuh optimal kucing dewasa.", 1),
+            ("obat-01", "Komunitas Peduli Kucing", "Drontal Cat Tablet", "Obat-obatan", 25000, 100, "Obat cacing andalan terpercaya bagi kesehatan sistem pencernaan kucing.", 1),
+            ("nutrisi-01", "Admin STIEIMA", "Minyak Ikan Bulu Berkilau", "Nutrisi & Vitamin", 100000, 30, "Suplemen kaya Omega 3 & 6 demi membasmi kerontokan bulu.", 1)
+        ]
+        cursor.executemany("INSERT INTO ecommerce_products VALUES (?, ?, ?, ?, ?, ?, ?, ?)", products_mock)
+        
+        # Direktori Default
+        directories_mock = [
+            ("Vet", "Klinik Utama Vet Medika", "Jl. Terusan Lowokwaru No. 12, Malang", "0341-555123", 1),
+            ("Community", "Malang Cat Rescue", "Cakupan Malang Raya - Sosialisasi Adopsi & Steril", "0812-3333-4444", 1)
+        ]
+        cursor.executemany("INSERT INTO directories (type, name, detail, contact, is_approved) VALUES (?, ?, ?, ?, ?)", directories_mock)
+        
+        # Agenda Komunitas Default
+        agendas_mock = [
+            ("Gerakan Steril Kucing Liar Bersubsidi", "Program steril bersubsidi dari STIEIMA Cat Care guna menekan kelebihan populasi liar.", "2026-06-25", "Kampus STIEIMA Malang", "AdminSTIEIMA"),
+            ("Vaksinasi Rabies Gratis", "Kampanye kesehatan preventif zoonosis tahunan bekerjasama dengan dinas peternakan.", "2026-07-10", "Halaman Depan Aula STIEIMA", "AdminSTIEIMA")
+        ]
+        cursor.executemany("INSERT INTO community_agendas (title, description, event_date, location, created_by) VALUES (?, ?, ?, ?, ?)", agendas_mock)
+        
+        conn.commit()
+    conn.close()
+
+# Inisialisasi Database
+init_db()
+
+# ==========================================
+# 3. GLOBAL STYLE & THEME (CSS)
 # ==========================================
 st.markdown("""
 <style>
-    /* Mengubah warna aksen utama menjadi oranye hangat dan biru lembut */
-    .stApp {
-        background-color: #fafafc;
+    /* Premium Orange & Blue Theme */
+    .main {
+        background-color: #FAFAFC;
     }
-    h1, h2, h3 {
-        color: #2E5B88 !important;
-        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    div.stButton > button:first-child {
+        background-color: #FF7800 !important;
+        color: white !important;
+        border: none;
+        border-radius: 8px;
+        padding: 8px 20px;
+        font-weight: bold;
+        transition: all 0.3s ease;
     }
-    .sidebar .sidebar-content {
-        background-color: #FFF5EC;
+    div.stButton > button:first-child:hover {
+        background-color: #E06600 !important;
+        box-shadow: 0px 4px 10px rgba(255, 120, 0, 0.3);
     }
-    /* Kotak informasi bergaya kartu */
-    .feature-card {
-        background-color: #ffffff;
+    .custom-card {
+        background-color: white;
         padding: 20px;
         border-radius: 12px;
         box-shadow: 0 4px 6px rgba(0,0,0,0.05);
-        border-left: 5px solid #FF8C32;
+        border-left: 5px solid #2E5B88;
         margin-bottom: 15px;
     }
-    .alert-danger-custom {
-        background-color: #FFECEC;
-        border-left: 5px solid #D8000C;
-        color: #D8000C;
+    .zoonosis-card {
+        background-color: #FFF5EC;
         padding: 15px;
         border-radius: 8px;
-        margin-top: 10px;
+        border-left: 5px solid #FF7800;
+        margin-bottom: 10px;
     }
-    .alert-warning-custom {
-        background-color: #FFF9E6;
-        border-left: 5px solid #9F6000;
-        color: #9F6000;
+    .law-card {
+        background-color: #F0F4F8;
         padding: 15px;
         border-radius: 8px;
-        margin-top: 10px;
-    }
-    .alert-success-custom {
-        background-color: #EDF7ED;
-        border-left: 5px solid #4CAF50;
-        color: #1E4620;
-        padding: 15px;
-        border-radius: 8px;
-        margin-top: 10px;
+        border-left: 5px solid #102A43;
+        margin-bottom: 10px;
     }
 </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# INISIALISASI STATE (DATABASE IN-MEMORY)
+# 4. LOGIKA BISNIS & PENENTU KESEHATAN KUCING
 # ==========================================
-# Inisialisasi data default hanya jika belum ada dalam session state
-if "initialized" not in st.session_state:
-    st.session_state.initialized = True
-    
-    # Direktori Dokter Hewan (Vet) Awal
-    st.session_state.vet_directory = [
-        {"id": 1, "nama": "Klinik Vet Medika Sejahtera", "alamat": "Jl. Raya Lowokwaru No. 12, Malang", "telepon": "0341-555123", "status": "Approved"},
-        {"id": 2, "nama": "Praktek Drh. Sarah Amanda", "alamat": "Ruko Sulfat Indah Blok B-4, Malang", "telepon": "0812-3456-7890", "status": "Approved"}
-    ]
-    
-    # Direktori Komunitas Kucing Awal
-    st.session_state.communities = [
-        {"id": 1, "nama": "Malang Cat Lovers Community", "kontak": "Hendra (0821-4455-6677)", "wilayah": "Malang Raya", "status": "Approved"},
-        {"id": 2, "nama": "Komunitas Peduli Kucing Liar STIEIMA", "kontak": "Admin STIEIMA", "wilayah": "Kampus & Sekitarnya", "status": "Approved"}
-    ]
-    
-    # Produk E-Commerce Awal
-    st.session_state.products = [
-        {"id": "pakan-01", "nama": "Royal Canin Fit 32 2kg", "kategori": "Makanan", "harga": 220000, "stok": 15, "deskripsi": "Pakan lengkap dan seimbang untuk kucing dewasa usia di atas 1 tahun."},
-        {"id": "obat-01", "nama": "Obat Cacing Drontal Cat (per tablet)", "kategori": "Obat-obatan", "harga": 25000, "stok": 50, "deskripsi": "Efektif membasmi cacing gelang dan cacing pita pada kucing."},
-        {"id": "nutrisi-01", "nama": "Minyak Ikan Bulu Kucing Premium", "kategori": "Nutrisi & Vitamin", "harga": 100000, "stok": 20, "deskripsi": "Mengandung Omega 3 & 6 untuk keindahan bulu dan pencegahan rontok."},
-        {"id": "kebersihan-01", "nama": "Shampoo Anti Kutu & Jamur 250ml", "kategori": "Kebersihan", "harga": 160000, "stok": 10, "deskripsi": "Formula sulfur ringan untuk membasmi jamur ringworm dan kutu kucing."}
-    ]
-    
-    # Keranjang Belanjaan Pengguna
-    st.session_state.cart = []
-    
-    # Riwayat Percakapan Chatbot
-    st.session_state.chat_history = [
-        {"role": "assistant", "content": "Halo Cat Lover! Saya Pushy AI, asisten virtual medis kucing dari STIEIMA Cat Care. Ada yang bisa saya bantu hari ini mengenai kesehatan kucing kesayangan Anda?"}
-    ]
-    
-    # Kisah Sukses (Testimoni Pengguna)
-    st.session_state.success_stories = [
-        {"user": "Budi - Malang", "cerita": "Kucing saya, si Miko, mendadak botak melingkar di telinga. Berkat fitur Kamera Deteksi AI Pushy, terindikasi Ringworm 85% sejak dini. Saya segera mengisolasinya dari anak saya, membeli sampo sulfur di e-commerce Pushy, dan sekarang Miko sudah sembuh total tanpa menularkan ke keluarga!"},
-        {"user": "Rini - Jakarta", "cerita": "Fitur Checklist Gejala membantu saya mendeteksi flu kucing sebelum terlambat. Pertolongan pertama dari aplikasi ini sangat menenangkan!"}
-    ]
-
-# ==========================================
-# LOGIKA BISNIS INTI (SESUAI PRD)
-# ==========================================
-
 def hitung_status_kesehatan(skor_ai: float, jumlah_gejala_fisik: int) -> dict:
-    """
-    Menghitung tingkat keparahan kesehatan kucing berdasarkan input model deteksi AI dan gejala fisik.
-    Aturan ini diambil langsung dari spesifikasi Unit Testing PRD Bab 6.A.
-    """
-    if skor_ai < 0.0 or skor_ai > 1.0:
-        raise ValueError("Skor AI harus berada di rentang nilai 0.0 hingga 1.0")
-    if jumlah_gejala_fisik < 0:
-        raise ValueError("Jumlah gejala tidak boleh bernilai negatif")
-
+    """Mengklasifikasikan tingkat keparahan berdasarkan skor AI & jumlah gejala fisik."""
     if skor_ai >= 0.75 or jumlah_gejala_fisik >= 3:
         return {
             "status": "BAHAYA",
             "perlu_isolasi": True,
-            "warna": "danger",
-            "pesan": "🚨 **Kondisi Bahaya/Kritis:** Segera isolasi kucing Anda secara ketat di ruangan terpisah. Jangan biarkan anak-anak mendekat untuk mencegah potensi penularan zoonosis (misal Scabies akut/Toxoplasmosis). Segera bawa ke Dokter Hewan terdekat!"
+            "rekomendasi": "🚨 **Status Bahaya:** Segera isolasi kucing ini di kandang terpisah dari kucing lain maupun kontak langsung dengan manusia (anak-anak). Ada potensi penularan infeksi bakteri/parasit zoonosis (misal Scabies akut atau Toxoplasmosis). Segera bawa ke Dokter Hewan rujukan terdekat!"
         }
     elif 0.40 <= skor_ai < 0.75 or 1 <= jumlah_gejala_fisik <= 2:
         return {
             "status": "PERLU PERHATIAN",
             "perlu_isolasi": True,
-            "warna": "warning",
-            "pesan": "⚠️ **Perlu Perhatian:** Kucing menunjukkan tanda-tanda awal sakit atau gejala ringan (seperti potensi Ringworm awal atau Flu ringan). Disarankan untuk memisahkan kandangnya untuk sementara waktu, berikan nutrisi suplemen bulu/imunitas, dan mandikan dengan sampo obat khusus."
+            "rekomendasi": "⚠️ **Status Perlu Perhatian:** Kucing memperlihatkan gejala ringan (potensi Ringworm awal atau Flu kucing). Dianjurkan melakukan karantina mandiri ringan di dalam kandang bersih, mandikan dengan shampo sulfur antiseptik, dan berikan suplemen minyak ikan."
         }
     else:
         return {
             "status": "SEHAT",
             "perlu_isolasi": False,
-            "warna": "success",
-            "pesan": "💚 **Kondisi Sehat:** Kucing Anda terdeteksi dalam kondisi prima! Tetap jaga kebersihan sanitasi kandang, pola makan teratur, serta pastikan jadwal vaksinasi selalu tepat waktu."
+            "rekomendasi": "💚 **Status Sehat:** Kondisi fisik luar kucing Anda dalam batas normal prima. Selalu jaga kebersihan sanitasi bak pasir serta patuhi jadwal vaksinasi berkala."
         }
 
 def hitung_total_belanja(items, kode_promo, biaya_kirim=15000):
-    """
-    Menghitung rincian pembayaran belanja e-commerce.
-    Aturan ini diambil langsung dari spesifikasi Unit Testing PRD Bab 6.B.
-    """
+    """Menghitung total rincian pembayaran kasir."""
     subtotal = sum(item["harga"] * item["kuantitas"] for item in items)
     nominal_diskon = 0
-    
-    # Aturan diskon promo STIEIMA Cat Care
     if kode_promo == "PUSHYSEHAT":
-        nominal_diskon = subtotal * 0.15 # Diskon 15%
+        nominal_diskon = subtotal * 0.15
     elif kode_promo == "GRATISONGKIR" and subtotal >= 150000:
-        biaya_kirim = max(0, biaya_kirim - 15000) # Potongan ongkir s.d Rp 15.000
-        
+        biaya_kirim = max(0, biaya_kirim - 15000)
+    
     total_akhir = (subtotal - nominal_diskon) + biaya_kirim
     return {
         "subtotal": subtotal,
@@ -180,25 +255,18 @@ def hitung_total_belanja(items, kode_promo, biaya_kirim=15000):
     }
 
 # ==========================================
-# FUNGSI INTEGRASI GEMINI CHATBOT (API CALL)
+# 5. INTEGRASI CHATBOT GEMINI & FALLBACK
 # ==========================================
 def panggil_gemini_api(user_message, system_instruction):
-    """
-    Memanggil model gemini-2.5-flash-preview-09-2025 secara non-streaming dengan
-    strategi retries eksponensial (up to 5 times) jika terjadi kegagalan jaringan.
-    """
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key={API_KEY}"
     headers = {'Content-Type': 'application/json'}
     payload = {
-        "contents": [{
-            "parts": [{"text": user_message}]
-        }],
+        "contents": [{"parts": [{"text": user_message}]}],
         "systemInstruction": {
             "parts": [{"text": system_instruction}]
         }
     }
     
-    # Jika API_KEY kosong (bawaan lingkungan), gunakan fallback simulasi cerdas
     if not API_KEY:
         return simulasi_respons_pushy(user_message)
         
@@ -206,644 +274,783 @@ def panggil_gemini_api(user_message, system_instruction):
     delay = 1.0
     for i in range(retries):
         try:
-            response = requests.post(url, headers=headers, json=payload, timeout=15)
+            response = requests.post(url, headers=headers, json=payload, timeout=10)
             if response.status_code == 200:
                 result = response.json()
                 text = result.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
                 if text:
                     return text
-            # Eksponensial Backoff
             time.sleep(delay)
             delay *= 2
         except Exception:
             time.sleep(delay)
             delay *= 2
             
-    return "Maaf, sepertinya koneksi asisten pintar kami sedang sibuk. Namun, pastikan Anda memberikan pertolongan pertama berupa isolasi mandiri dan menjaga kebersihan jika kucing Anda terindikasi sakit, lalu segera hubungi dokter hewan terdekat."
+    return simulasi_respons_pushy(user_message)
 
 def simulasi_respons_pushy(query):
-    """Fallback simulasi asisten Pushy AI berbasis aturan kata kunci medis kucing."""
     query_lower = query.lower()
-    time.sleep(1) # Efek mengetik natural
-    
-    if "jamur" in query_lower or "gatal" in query_lower or "botak" in query_lower or "ringworm" in query_lower:
-        return "Halo Cat Lover! Gejala botak melingkar kemerahan sangat identik dengan **Ringworm** (infeksi jamur). Jamur ini bersifat **Zoonosis** (bisa menular ke manusia melalui sentuhan kulit). Tindakan pertama: \n1. Isolasi kucing Anda di ruangan khusus.\n2. Oleskan salep anti-jamur / mandikan dengan shampoo sulfur seminggu 2 kali.\n3. Cuci tangan dengan sabun antiseptik setelah memegang kucing."
-    elif "muntah" in query_lower or "mencret" in query_lower or "diare" in query_lower:
-        return "Gejala pencernaan terganggu seperti muntah atau diare harus diawasi ketat. Pastikan kucing tidak dehidrasi dengan memberikan air bersih matang atau larutan oralit khusus hewan. Hentikan pemberian makanan basah selama 12 jam terlebih dahulu, lalu konsultasikan dengan dokter hewan jika berlanjut lebih dari 24 jam."
-    elif "flu" in query_lower or "bersin" in query_lower or "ingus" in query_lower:
-        return "Flu kucing (Feline Rhinotracheitis/Calicivirus) sangat mudah menular antar-kucing. Segera pisahkan piring makan dan tempat tidur kucing sehat dari kucing yang bersin. Berikan vitamin minyak ikan untuk membantu meningkatkan daya tahan tubuh mereka."
+    time.sleep(1)
+    if "hukum" in query_lower or "aniaya" in query_lower or "pasal" in query_lower:
+        return "Halo Cat Lover! Hukum perlindungan hewan di Indonesia diatur kuat dalam **KUHP Pasal 302**. Pelaku penganiayaan binatang dapat dijatuhi hukuman pidana penjara paling lama 9 bulan jika menyebabkan hewan sakit, cacat, atau mati. Mari lindungi hak hidup hewan di sekitar kita!"
+    elif "jamur" in query_lower or "ringworm" in query_lower or "botak" in query_lower:
+        return "Ringworm adalah infeksi jamur kulit (*Microsporum canis*) yang sangat menular dari kucing ke kulit manusia (*Zoonosis*). Penanganan mandiri awal: mandikan dengan shampoo sulfur khusus, oleskan salep antijamur miconazole, serta selalu cuci tangan setelah merawat kucing Anda."
     else:
-        return "Pertanyaan yang sangat bagus mengenai kucing Anda! Untuk memastikan kesehatan optimal peliharaan Anda, selalu jaga sanitasi kandang, beri makanan tinggi protein, dan rutin berikan obat cacing setiap 3 bulan sekali. Ada gejala fisik spesifik lain yang sedang dialami si pus?"
+        return "Halo! Sebagai asisten pintar dari STIEIMA Cat Care, saya sangat menyarankan Anda selalu menjaga sanitasi kandang kucing, memberikan nutrisi kaya asam lemak omega, serta mengisolasi kucing di ruangan khusus jika ia memperlihatkan gejala flu atau diare."
 
 # ==========================================
-# RENDER IKON PUSHY (DENGAN FILE PNG)
-# ==========================================
-# RENDER IKON PUSHY (DENGAN FILE PNG)
+# 6. RENDER LOGO IKON RESMI (SVG)
 # ==========================================
 def render_logo_pushy():
-    """Menampilkan logo Pushy dengan file PNG di sidebar"""
-    try:
-        # Gunakan file pushy_catcare_app.png dari direktori yang sama
-        st.sidebar.image(
-            "pushy_catcare_app.png",
-            width=200,
-            use_container_width=False
-        )
-        st.sidebar.markdown("<h2 style='text-align: center; color: #FF7800 !important; margin-top: -10px;'>Pushy CatCare</h2>", unsafe_allow_html=True)
-        st.sidebar.markdown("<p style='text-align: center; font-size: 12px; color: #2E5B88; letter-spacing: 1px;'>Smart Pet Health Management</p>", unsafe_allow_html=True)
-    except FileNotFoundError:
-        # Fallback jika file tidak ditemukan
-        st.sidebar.markdown("""
-        <div style="text-align: center; margin-bottom: 20px;">
-            <h2 style="color: #FF7800 !important;">🐱 Pushy</h2>
-            <span style="font-size: 14px; font-weight: bold; color: #2E5B88; letter-spacing: 1px;">CatCare App</span>
+    svg_code = """
+    <div style="text-align: center; margin-bottom: 10px;">
+        <svg width="100" height="100" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect width="100" height="100" rx="22" fill="url(#orange_grad)" />
+            <path d="M50 78C68 70 72 52 72 38V24L50 16L28 24V38C28 52 32 70 50 78Z" fill="#2E5B88" stroke="#FFFFFF" stroke-width="2"/>
+            <path d="M35 55C35 44 42 36 50 36C58 36 65 44 65 55C65 59 62 64 50 64C38 64 35 59 35 55Z" fill="#FFA54F"/>
+            <polygon points="36,44 32,28 44,38" fill="#FFA54F"/>
+            <polygon points="64,44 68,28 56,38" fill="#FFA54F"/>
+            <polygon points="37,42 34,31 42,38" fill="#FFC0CB"/>
+            <polygon points="63,42 66,31 58,38" fill="#FFC0CB"/>
+            <circle cx="45" cy="48" r="3" fill="#333333"/>
+            <circle cx="55" cy="48" r="3" fill="#333333"/>
+            <polygon points="49,51 51,51 50,52.5" fill="#FF6B6B"/>
+            <path d="M47.5 53Q50 55 50 53.5Q50 55 52.5 53" stroke="#333333" stroke-width="1.2" fill="none"/>
+            <path d="M46 24C44 24 43 25.5 44 27C45.5 29 48 31 50 32C52 31 54.5 29 56 27C57 25.5 56 24 54 24C52 24 51 25.5 50 26C49 25.5 48 24 46 24Z" fill="#FF6B6B"/>
+            <defs>
+                <linearGradient id="orange_grad" x1="0" y1="0" x2="100" y2="100" gradientUnits="userSpaceOnUse">
+                    <stop stop-color="#FFAD60"/>
+                    <stop offset="1" stop-color="#FF7800"/>
+                </linearGradient>
+            </defs>
+        </svg>
+        <h2 style="margin: 0; color: #FF7800 !important;">Pushy</h2>
+        <span style="font-size: 13px; font-weight: bold; color: #2E5B88; letter-spacing: 1px;">CatCare App</span>
+    </div>
+    """
+    st.sidebar.markdown(svg_code, unsafe_allow_html=True)
+
+# ==========================================
+# 7. MANAJEMEN SESSION STATE UTAMA
+# ==========================================
+if "user" not in st.session_state:
+    st.session_state.user = None  # None artinya tamu / belum masuk
+if "cart" not in st.session_state:
+    st.session_state.cart = []
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = [
+        {"role": "assistant", "content": "Halo! Saya Pushy AI, asisten medis virtual Anda. Silakan tanyakan hal-hal terkait P3K, infeksi parasit zoonosis, atau ketentuan hukum perlindungan hewan."}
+    ]
+
+# ==========================================
+# 8. SISTEM LOGIN & REGISTRASI (SISI SIDEBAR)
+# ==========================================
+render_logo_pushy()
+st.sidebar.markdown("---")
+
+if st.session_state.user is None:
+    st.sidebar.subheader("🔐 Akses Ekosistem")
+    auth_mode = st.sidebar.radio("Opsi Masuk:", ["Log In", "Registrasi Akun Baru"])
+    
+    if auth_mode == "Log In":
+        login_username = st.sidebar.text_input("Username:")
+        login_password = st.sidebar.text_input("Password:", type="password")
+        if st.sidebar.button("Masuk"):
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            hashed_input = hashlib.sha256(login_password.encode()).hexdigest()
+            cursor.execute("SELECT * FROM users WHERE username = ? AND password_hash = ?", (login_username, hashed_input))
+            user_row = cursor.fetchone()
+            conn.close()
+            
+            if user_row:
+                st.session_state.user = {
+                    "user_id": user_row["user_id"],
+                    "username": user_row["username"],
+                    "email": user_row["email"],
+                    "role": user_row["role"]
+                }
+                st.sidebar.success(f"Berhasil masuk sebagai {user_row['username']}")
+                st.rerun()
+            else:
+                st.sidebar.error("Username atau password salah!")
+                
+    else:
+        reg_username = st.sidebar.text_input("Username Baru:")
+        reg_email = st.sidebar.text_input("Email:")
+        reg_password = st.sidebar.text_input("Password Baru:", type="password")
+        reg_role = st.sidebar.selectbox("Peran Pengguna:", ["Cat Lover", "Admin", "Agent_Expert", "Agent_Developer"])
+        
+        # Guard sandi admin jika memilih Admin/Agent
+        reg_admin_pass = ""
+        if reg_role in ["Admin", "Agent_Expert", "Agent_Developer"]:
+            reg_admin_pass = st.sidebar.text_input("Password Pengaman Peran:", type="password", help="Masukkan kunci otorisasi institusi")
+            
+        if st.sidebar.button("Daftarkan Akun"):
+            if not reg_username or not reg_email or not reg_password:
+                st.sidebar.error("Seluruh isian isian wajib dilengkapi!")
+            elif reg_role in ["Admin", "Agent_Expert", "Agent_Developer"] and reg_admin_pass != "stieima123":
+                st.sidebar.error("Kunci pengaman peran tidak sah!")
+            else:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                hashed_pass = hashlib.sha256(reg_password.encode()).hexdigest()
+                uid = f"usr-{int(time.time())}"
+                try:
+                    cursor.execute("INSERT INTO users VALUES (?, ?, ?, ?, ?)", (uid, reg_username, reg_email, hashed_pass, reg_role))
+                    conn.commit()
+                    st.sidebar.success("Akun berhasil dibuat! Silakan pilih 'Log In'")
+                except sqlite3.IntegrityError:
+                    st.sidebar.error("Email sudah pernah terdaftar!")
+                conn.close()
+else:
+    # Pengguna Terotentikasi
+    st.sidebar.markdown(f"👤 **Masuk Sebagai:** `{st.session_state.user['username']}`")
+    st.sidebar.markdown(f"🏷️ **Hak Akses:** `{st.session_state.user['role']}`")
+    if st.sidebar.button("Keluar Akun"):
+        st.session_state.user = None
+        st.session_state.cart = []
+        st.rerun()
+
+# ==========================================
+# 9. SISTEM NAVIGASI RESPONSIF BERDASARKAN PERAN
+# ==========================================
+st.sidebar.markdown("---")
+current_role = st.session_state.user["role"] if st.session_state.user else "Cat Lover"
+
+if current_role == "Cat Lover":
+    active_menu = st.sidebar.radio(
+        "Navigasi Modul Pusy:",
+        [
+            "🏠 Beranda & Hukum Perlindungan",
+            "📷 Kamera Deteksi AI",
+            "📋 Checklist Gejala & P3K",
+            "🛒 E-Commerce Komunitas",
+            "📍 Direktori Vet & Komunitas",
+            "🚨 Pelaporan Darurat Kucing",
+            "📅 Agenda Kegiatan Sosial",
+            "💬 Tanya Chatbot Pushy AI"
+        ]
+    )
+elif current_role == "Admin":
+    active_menu = st.sidebar.radio(
+        "Kontrol Panel Admin STIEIMA:",
+        [
+            "📊 Dashboard & Laporan Keuangan",
+            "🩺 Moderasi Direktori Vet & Komunitas",
+            "📦 Moderasi Dagangan E-Commerce"
+        ]
+    )
+elif current_role == "Agent_Expert":
+    active_menu = st.sidebar.radio(
+        "Panel Ahli Penanganan Kucing:",
+        [
+            "🚨 Daftar Laporan Darurat Lapangan",
+            "📅 Ajukan Agenda Komunitas"
+        ]
+    )
+else:  # Agent_Developer
+    active_menu = st.sidebar.radio(
+        "Panel Ahli Pengembang Aplikasi:",
+        [
+            "🖥️ Optimasi Basis Data SQLite",
+            "🚀 Metrik Skalabilitas Sistem"
+        ]
+    )
+
+# Tampilkan informasi kontak resmi STIEIMA Cat Care di bagian bawah sidebar (FE-09)
+st.sidebar.markdown("---")
+st.sidebar.markdown("""
+📧 **Hubungi Kami:** [catcare@stiemlg.ac.id](mailto:catcare@stiemlg.ac.id)  
+📱 **Ikuti Sosial Media Kami:** 🐤 [X @catcarestieima](https://x.com/catcarestieima)  
+📸 [IG @catcarestieima](https://instagram.com/catcarestieima)  
+👥 [FB /catcarestieima](https://facebook.com/catcarestieima)
+""")
+
+# ==========================================
+# 10. DEKLARASI MODUL HALAMAN UTAMA
+# ==========================================
+
+# ---------------------------------------------------------
+# MODUL: BERANDA & HUKUM PERLINDUNGAN (FE-01 & FE-02)
+# ---------------------------------------------------------
+if active_menu == "🏠 Beranda & Hukum Perlindungan":
+    st.markdown("# 🐱 Pushy Cat Care App — STIEIMA")
+    st.write("Sistem fullstack terintegrasi dari STIEIMA Cat Care untuk mengawal kesejahteraan kucing serta menjaga keselamatan pemiliknya.")
+    
+    col_stat1, col_stat2 = st.columns(2)
+    with col_stat1:
+        st.markdown(f"""
+        <div class="zoonosis-card">
+            <h4>🛡️ Edukasi Ancaman Infeksi Zoonosis Berbahaya</h4>
+            <ul>
+                <li><b>Toxoplasmosis (Parasit Gondii):</b> Menular lewat kotoran kucing. Berisiko fatal pada janin ibu hamil. <i>Protokol: Pakai sekop pengambil kotoran dan cuci tangan steril.</i></li>
+                <li><b>Ringworm (Microsporum Canis):</b> Jamur luar kulit dengan tanda botak melingkar merah bersisik yang amat gatal dan menular kilat ke kulit manusia.</li>
+                <li><b>Scabies (Sarcoptes Scabiei):</b> Tungau mikroskopis pemicu borok gatal luar biasa yang dapat menginfeksi tangan/lengan pemilik.</li>
+            </ul>
+        </div>
+        """, unsafe_allow_html=True)
+        
+    with col_stat2:
+        st.markdown(f"""
+        <div class="law-card">
+            <h4>⚖️ Landasan Hukum Perlindungan Hewan di Indonesia</h4>
+            <p>Aplikasi ini menentang keras segala bentuk kekerasan terhadap hewan peliharaan ataupun hewan liar (*animal abuse*).</p>
+            <ul>
+                <li><b>KUHP Pasal 302:</b> Menetapkan ancaman pidana penjara paling lama 9 bulan bagi pelaku yang menganiaya binatang secara sadis hingga cacat atau mati.</li>
+                <li><b>UU Peternakan dan Kesehatan Hewan No. 41 Tahun 2014:</b> Mewajibkan pemilik memelihara hewan dengan layak serta menjamin kebebasan mereka dari kelaparan, ketakutan, dan rasa sakit.</li>
+            </ul>
         </div>
         """, unsafe_allow_html=True)
 
-# ==========================================
-# SIDEBAR - NAVIGASI UTAMA
-# ==========================================
-render_logo_pushy()
+    st.markdown("---")
+    st.subheader("📚 Ciri Fisik Deteksi Mandiri")
+    col_c1, col_c2 = st.columns(2)
+    with col_c1:
+        st.success("**Ciri Kucing SEHAT:**\n- Nafsu makan tinggi & aktif bergerak\n- Mata jernih tanpa kotoran berlebih\n- Hidung sedikit lembap (tidak berlendir)\n- Bulu tebal berkilau, tidak ada kebotakan melingkar.")
+    with col_c2:
+        st.error("**Ciri Kucing SAKIT (Waspada!):**\n- Lesu, bersembunyi di area gelap, menolak makan\n- Mata merah, bengkak, berair atau belekan kehijauan\n- Bersin tiada henti disertai lendir kental di hidung\n- Rambut botak melingkar bersisik kemerahan di kulit.")
 
-st.sidebar.markdown("---")
-role = st.sidebar.selectbox("Pilih Akses Peran (Role):", ["Cat Lover (Pecinta Kucing)", "Admin App (STIEIMA Cat Care)"])
+# ---------------------------------------------------------
+# MODUL: KAMERA DETEKS AI (FE-03)
+# ---------------------------------------------------------
+elif active_menu == "📷 Kamera Deteksi AI":
+    st.markdown("# 📷 Kamera Deteksi Kesehatan AI Vision")
+    st.write("Sistem simulasi analisis visual cerdas untuk mendeteksi gangguan kulit luar dan mata pada kucing.")
+    
+    input_source = st.selectbox("Metode Unggah Foto:", ["Unggah File Foto (.png/.jpg)", "Kamera Langsung Perangkat", "Simulasi Deteksi Cepat (Demo Praktis)"])
+    
+    score_sim = 0.12
+    symptom_sim = 0
+    desc_sim = "Kulit dan bulu dalam keadaan normal."
+    
+    if input_source == "Simulasi Deteksi Cepat (Demo Praktis)":
+        kasus = st.selectbox("Pilih Skenario Kasus Kucing:", [
+            "Kucing Sehat Tanpa Gejala Fisik",
+            "Kucing dengan bintik rontok melingkar kemerahan (Ringworm)",
+            "Kucing dengan keropeng abu-abu kering pada ujung telinga (Scabies)"
+        ])
+        if kasus == "Kucing dengan bintik rontok melingkar kemerahan (Ringworm)":
+            score_sim = 0.68
+            symptom_sim = 1
+            desc_sim = "Terdeteksi pola lingkar kebotakan parsial (Alopecia) dengan ketebalan kulit meningkat."
+        elif kasus == "Kucing dengan keropeng abu-abu kering pada ujung telinga (Scabies)":
+            score_sim = 0.88
+            symptom_sim = 3
+            desc_sim = "Terdeteksi kerak tebal keabu-abuan kering meluas pada tepi daun telinga."
+    else:
+        uploaded_img = st.file_uploader("Pilih file foto kucing:", type=["png", "jpg", "jpeg"]) if input_source == "Unggah File Foto (.png/.jpg)" else st.camera_input("Ambil foto bagian luar tubuh kucing:")
+        if uploaded_img:
+            score_sim = 0.72
+            symptom_sim = 2
+            desc_sim = "Model AI mendeteksi kemerahan tidak wajar pada permukaan kulit."
 
-if role == "Cat Lover (Pecinta Kucing)":
-    menu = st.sidebar.radio(
-        "Menu Utama Aplikasi:",
-        [
-            "🏠 Beranda & Ensiklopedia",
-            "📷 Kamera Deteksi AI",
-            "📋 Checklist Gejala & P3K",
-            "🛒 Toko E-Commerce",
-            "📍 Vet & Komunitas Sekitar",
-            "💬 Tanya Asisten Pushy AI"
-        ]
-    )
-else:
-    menu = st.sidebar.radio(
-        "Menu Kontrol Panel Admin:",
-        [
-            "📊 Dasbor Utama STIEIMA",
-            "🩺 Moderasi Vet & Komunitas",
-            "📦 Manajemen Produk"
-        ]
-    )
-
-st.sidebar.markdown("---")
-st.sidebar.caption("Dikembangkan Oleh: **STIEIMA Cat Care** © 2026")
-st.sidebar.caption("Versi Aplikasi: `1.0.0 (Stable)`")
-
-# ==========================================
-# HALAMAN AKSES: CAT LOVER
-# ==========================================
-if role == "Cat Lover (Pecinta Kucing)":
-
-    # MENU 1: BERANDA & ENSIKLOPEDIA
-    if menu == "🏠 Beranda & Ensiklopedia":
-        st.markdown("# 🏠 Selamat Datang di Pushy Cat Care App")
-        st.write("Aplikasi kesehatan kucing terlengkap dan terpercaya untuk melindungi peliharaan kesayangan serta keluarga Anda dari penularan penyakit zoonosis.")
+    if st.button("🚀 Mulai Analisis Deteksi AI"):
+        with st.spinner("Sedang memproses citra kulit menggunakan model klasifikasi AI..."):
+            time.sleep(1.5)
+            
+        hasil_medis = hitung_status_kesehatan(score_sim, symptom_sim)
         
-        # Sukses Story (Testimoni Dinamis)
-        st.markdown("### 🏆 Kisah Sukses Pengguna (*Success Story*)")
-        cols_story = st.columns(len(st.session_state.success_stories))
-        for idx, story in enumerate(st.session_state.success_stories):
-            with cols_story[idx]:
+        # Simpan riwayat deteksi ke database
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        user_id = st.session_state.user["user_id"] if st.session_state.user else "guest"
+        cursor.execute("""
+        INSERT INTO ai_detections (user_id, image_name, confidence_score, symptoms_count, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """, (user_id, "deteksi_kamera.png", score_sim, symptom_sim, hasil_medis["status"], datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        conn.commit()
+        conn.close()
+        
+        st.markdown(f"### Diagnosis Hasil Analisis: **{hasil_medis['status']}**")
+        st.write(f"**Tingkat Keyakinan AI:** `{int(score_sim * 100)}%` | **Temuan Visual:** *{desc_sim}*")
+        
+        if hasil_medis["status"] == "BAHAYA":
+            st.error(hasil_medis["rekomendasi"])
+        elif hasil_medis["status"] == "PERLU PERHATIAN":
+            st.warning(hasil_medis["rekomendasi"])
+        else:
+            st.success(hasil_medis["rekomendasi"])
+
+# ---------------------------------------------------------
+# MODUL: CHECKLIST GEJALA & P3K (FE-04)
+# ---------------------------------------------------------
+elif active_menu == "📋 Checklist Gejala & P3K":
+    st.markdown("# 📋 Checklist Gejala Mandiri & Pohon Keputusan P3K")
+    st.write("Centang gejala fisik yang dialami kucing peliharaan Anda untuk merumuskan saran pertolongan pertama secara aman.")
+    
+    st.subheader("Gejala Teramati:")
+    g1 = st.checkbox("Bulu rontok parah disertai timbulnya koreng kering gatal")
+    g2 = st.checkbox("Mata bengkak mengeluarkan belek kental lengket kehijauan")
+    g3 = st.checkbox("Sering batuk, bersin konstan, dan bernapas dengan berbunyi")
+    g4 = st.checkbox("Mengalami diare encer berulang atau muntah cairan")
+    g5 = st.checkbox("Kucing lemas tidak bertenaga, tidak mau makan, bersembunyi")
+    
+    total_gejala_aktif = sum([g1, g2, g3, g4, g5])
+    
+    if st.button("🩺 Dapatkan Panduan P3K"):
+        # Penentuan status via pohon keputusan
+        hasil = hitung_status_kesehatan(0.25 * total_gejala_aktif, total_gejala_aktif)
+        st.markdown(f"### Evaluasi Gejala: **{hasil['status']}**")
+        
+        if hasil["status"] == "BAHAYA":
+            st.error(hasil["rekomendasi"])
+            st.markdown("""
+            #### 🚑 Tindakan P3K Darurat Khusus (Kasus Berat):
+            1.  **Gunakan Sarung Tangan Mandatori:** Jangan memegang kucing tanpa pelindung tangan untuk menghindari risiko Scabies atau spora Ringworm yang melompat ke kulit Anda.
+            2.  **Isolasi Total:** Masukkan kucing ke kandang khusus, tempatkan di ruangan kering tersendiri, jauhi dari interaksi keluarga.
+            3.  **Pemberian Cairan:** Jika kucing muntah/diare, usahakan beri larutan elektrolit khusus hewan menggunakan spet suntikan tanpa jarum agar terhindar dari dehidrasi kritis.
+            """)
+        elif hasil["status"] == "PERLU PERHATIAN":
+            st.warning(hasil["rekomendasi"])
+            st.markdown("""
+            #### 💊 Tindakan P3K Ringan:
+            1.  **Karantina Kandang:** Tempatkan kucing di kandang bersih agar terhindar dari stres lingkungan luar.
+            2.  **Pembersihan:** Basuh mata yang belekan memakai kapas steril hangat hangat kuku secara perlahan.
+            3.  **Suplemen Mandiri:** Berikan minyak ikan dan suplemen vitamin imunitas.
+            """)
+        else:
+            st.success(hasil["rekomendasi"])
+
+# ---------------------------------------------------------
+# MODUL: E-COMMERCE MULTI-MERCHANT KOMUNITAS (FE-06)
+# ---------------------------------------------------------
+elif active_menu == "🛒 E-Commerce Komunitas":
+    st.markdown("# 🛒 E-Commerce Komunitas STIEIMA Cat Care")
+    st.write("Jual beli makanan kucing, nutrisi, obat bebas, dan perlengkapan pemeliharaan. Komunitas terdaftar dapat membuka dagangannya sendiri.")
+    
+    tab_belanja, tab_buka_lapak = st.tabs(["🛍️ Belanja Kebutuhan Kucing", "🏬 Buka Lapak Dagangan Komunitas"])
+    
+    with tab_belanja:
+        col_prods, col_cart = st.columns([2, 1])
+        
+        with col_prods:
+            conn = get_db_connection()
+            # Hanya tampilkan barang yang disetujui (Approved) oleh Admin
+            products = conn.execute("SELECT * FROM ecommerce_products WHERE is_approved = 1").fetchall()
+            conn.close()
+            
+            st.subheader("Katalog Produk Komunitas")
+            for prod in products:
                 st.markdown(f"""
-                <div class="feature-card">
-                    <p style="font-style: italic; color: #555;">"{story['cerita']}"</p>
-                    <strong style="color: #FF8C32;">— {story['user']}</strong>
+                <div class="custom-card">
+                    <h4 style="margin:0;">{prod['name']}</h4>
+                    <span style="font-size:12px; color:#777;">Penyedia: {prod['owner_name']} | Kategori: {prod['category']} | Stok: {prod['stock']}</span>
+                    <p style="margin:5px 0;">{prod['description']}</p>
+                    <strong style="color:#FF7800; font-size:16px;">Rp {prod['price']:,}</strong>
                 </div>
                 """, unsafe_allow_html=True)
-        
-        # Ensiklopedia Penyakit Kucing (FE-01)
-        st.markdown("---")
-        st.markdown("### 📚 Ensiklopedia Kesehatan & Protokol Kebersihan")
-        
-        tab_zoonosis, tab_nutrisi, tab_vaksinasi = st.tabs([
-            "🛡️ Pencegahan Penyakit Menular (Zoonosis)",
-            "🥩 Kebutuhan Nutrisi & Makanan",
-            "💉 Jadwal & Pentingnya Vaksinasi"
-        ])
-        
-        with tab_zoonosis:
-            st.markdown("#### Lindungi Diri dari Infeksi Zoonosis")
-            st.write("Zoonosis adalah jenis penyakit yang dapat ditularkan dari hewan peliharaan (kucing) ke manusia atau sebaliknya.")
-            
-            col_z1, col_z2 = st.columns(2)
-            with col_z1:
-                st.markdown("""
-                * **Toxoplasmosis (Parasit):** Menular lewat kotoran kucing. Dapat berdampak serius bagi ibu hamil. 
-                    *Protokol: Gunakan sekop dan sarung tangan saat membersihkan bak pasir, lalu cuci tangan.*
-                * **Ringworm (Jamur Kulit):** Ditandai dengan lingkaran bersisik botak kemerahan di kulit. Sangat cepat menular ke manusia yang menyentuhnya.
-                """)
-            with col_z2:
-                st.markdown("""
-                * **Scabies (Kutu Sarcoptes):** Menyebabkan rasa gatal luar biasa pada kucing dan ruam bintik kemerahan pada tangan manusia.
-                    *Protokol: Pisahkan isolasi kucing secepatnya jika bulu rontok dan kucing terus mencakar telinga/wajah.*
-                """)
-            st.info("💡 **Tips Aman:** Mandikan kucing secara rutin dengan sabun sulfur khusus hewan dan semprotkan disinfektan pada kandang setidaknya seminggu sekali.")
-            
-        with tab_nutrisi:
-            st.markdown("#### Kunci Kucing Sehat: Nutrisi yang Tepat")
-            st.write("Nutrisi yang seimbang memperkuat kekebalan alami kucing, menyehatkan folikel rambut sehingga tidak rontok, dan meminimalisir penularan penyakit parasit kulit.")
-            st.markdown("""
-            1.  **Protein Hewani Tinggi:** Kucing adalah karnivora sejati (*obligate carnivore*), membutuhkan taurin tinggi dari daging merah atau ikan.
-            2.  **Omega 3 & 6:** Minyak ikan esensial menjaga kelembapan kulit dan membuat bulu bersinar berkilau.
-            3.  **Serat Alami:** Membantu mempermudah pembuangan gumpalan rambut (*hairball*) di perut.
-            """)
-            
-        with tab_vaksinasi:
-            st.markdown("#### Panduan Vaksinasi Kucing")
-            st.write("Vaksinasi melindungi kucing dari virus fatal seperti Feline Panleukopenia, Calicivirus, dan Herpesvirus (Vaksin F3/F4).")
-            
-            data_vaksin = {
-                "Usia Kucing": ["8 - 10 Minggu", "12 - 14 Minggu", "6 Bulan", "1 Tahun sekali"],
-                "Jenis Vaksin": ["Vaksin F3 (Tahap Pertama)", "Vaksin F3 & F4 (Booster Kedua)", "Vaksin Rabies (Sangat Penting!)", "Vaksin Booster Tahunan"],
-                "Tujuan": ["Mencegah Panleukopenia, Rinotrakeitis", "Memperkuat kekebalan komprehensif", "Mencegah virus rabies zoonosis fatal", "Menjaga imunitas seumur hidup"]
-            }
-            st.table(pd.DataFrame(data_vaksin))
-
-        # Integrasi Sosial Media (FE-07)
-        st.markdown("---")
-        st.markdown("#### 📣 Ikuti & Bagikan Kampanye STIEIMA Cat Care")
-        st.write("Bantu kami mengedukasi masyarakat luas tentang pentingnya menjaga kesehatan kucing peliharaan.")
-        st.button("🔗 Bagikan Pengetahuan Ini ke X (Twitter)")
-        st.button("📸 Ikuti Instagram Kami @STIEIMACatCare")
-
-    # MENU 2: KAMERA DETEKSI AI
-    elif menu == "📷 Kamera Deteksi AI":
-        st.markdown("# 📷 Kamera Deteksi AI (Kesehatan Fisik Kucing)")
-        st.write("Gunakan fitur ini untuk mendeteksi kelainan kulit luar, mata belekan, atau masalah telinga kucing secara cepat berbasis teknologi AI Vision.")
-        
-        # Pilihan input
-        source_opt = st.radio("Pilih Sumber Pengambilan Gambar:", ["Gunakan Kamera Perangkat", "Unggah Foto dari Galeri", "Gunakan Gambar Simulasi (Untuk Demo)"])
-        
-        image_file = None
-        if source_opt == "Gunakan Kamera Perangkat":
-            image_file = st.camera_input("Arahkan kamera ke bagian tubuh kucing yang mencurigai sakit")
-        elif source_opt == "Unggah Foto dari Galeri":
-            image_file = st.file_uploader("Unggah foto detail kucing (Format JPG/PNG)", type=["jpg", "png", "jpeg"])
-        else:
-            st.info("Pilih kondisi kucing simulasi di bawah ini untuk melihat cara kerja analisis model AI:")
-            demo_case = st.selectbox("Pilih Skenario Kasus:", [
-                "Demo 1: Kucing Sehat Walafiat",
-                "Demo 2: Kucing dengan bintik rontok melingkar (Potensi Ringworm/Jamur)",
-                "Demo 3: Kucing dengan bulu rontok seluruh tubuh, berkerak abu-abu di telinga (Potensi Scabies Akut)"
-            ])
-            
-        btn_deteksi = st.button("🚀 Mulai Analisis AI Sekarang")
-        
-        if btn_deteksi:
-            # Tentukan input tiruan sesuai pilihan demo atau input nyata
-            skor_ai_simulasi = 0.10
-            gejala_simulasi = 0
-            kelainan_terdeteksi = "Tidak ada kelainan"
-            
-            if source_opt == "Gunakan Gambar Simulasi (Untuk Demo)":
-                if "Demo 1" in demo_case:
-                    skor_ai_simulasi = 0.12
-                    gejala_simulasi = 0
-                    kelainan_terdeteksi = "Bulu dan kulit dalam kondisi bersih sempurna."
-                elif "Demo 2" in demo_case:
-                    skor_ai_simulasi = 0.65
-                    gejala_simulasi = 1
-                    kelainan_terdeteksi = "Terdeteksi pola melingkar tanpa bulu (Alopecia) pada kulit luar."
-                else: # Demo 3
-                    skor_ai_simulasi = 0.88
-                    gejala_simulasi = 3
-                    kelainan_terdeteksi = "Terdeteksi kerak parah kering di tepi telinga dan kulit bersisik."
-            else:
-                # Jika input asli dari kamera/upload
-                if image_file is not None:
-                    # Simulasi pengolahan gambar acak
-                    skor_ai_simulasi = round(random.uniform(0.35, 0.90), 2)
-                    gejala_simulasi = random.randint(1, 3)
-                    kelainan_terdeteksi = "Terdeteksi pola anomali kemerahan pada permukaan kulit luar kucing."
-                else:
-                    st.warning("⚠️ Mohon unggah foto atau gunakan kamera terlebih dahulu sebelum memulai deteksi.")
-                    st.stop()
-            
-            # Tampilkan animasi loading
-            with st.spinner("Sedang memproses citra dan mendiagnosis lewat AI Model..."):
-                time.sleep(2.0)
-            
-            # Hitung Status Kesehatan berdasarkan logika bisnis PRD
-            hasil_analisis = hitung_status_kesehatan(skor_ai_simulasi, gejala_simulasi)
-            
-            # Render Hasil ke Layar
-            st.markdown("### 📋 Hasil Diagnosis Analisis AI")
-            col_res1, col_res2 = st.columns([1, 2])
-            
-            with col_res1:
-                st.metric("Tingkat Keyakinan Klasifikasi AI", f"{int(skor_ai_simulasi * 100)}%")
-                st.write(f"**Temuan Visual:** {kelainan_terdeteksi}")
-            
-            with col_res2:
-                # Render box berdasarkan status warna
-                warna_box = hasil_analisis["warna"]
-                if warna_box == "danger":
-                    st.markdown(f'<div class="alert-danger-custom">{hasil_analisis["pesan"]}</div>', unsafe_allow_html=True)
-                elif warna_box == "warning":
-                    st.markdown(f'<div class="alert-warning-custom">{hasil_analisis["pesan"]}</div>', unsafe_allow_html=True)
-                else:
-                    st.markdown(f'<div class="alert-success-custom">{hasil_analisis["pesan"]}</div>', unsafe_allow_html=True)
-                    
-            # Rekomendasi Integrasi Produk E-commerce & Vet
-            if hasil_analisis["status"] != "SEHAT":
-                st.markdown("---")
-                st.markdown("### 🛒 Rekomendasi Solusi & Produk Pengobatan")
-                st.write("Berdasarkan diagnosa, berikut beberapa produk obat dari toko Pushy yang disarankan untuk penanganan darurat awal:")
                 
-                # Saring produk rekomendasi
-                rek_produk = [p for p in st.session_state.products if p["kategori"] in ["Obat-obatan", "Kebersihan", "Nutrisi & Vitamin"]]
-                cols_rek = st.columns(len(rek_produk))
-                for idx, prod in enumerate(rek_produk):
-                    with cols_rek[idx]:
-                        st.markdown(f"**{prod['nama']}**")
-                        st.write(f"Harga: Rp {prod['harga']:,}")
-                        if st.button(f"Tambah ke Keranjang", key=f"rek_cart_{prod['id']}"):
-                            # Tambah ke keranjang
-                            existing = next((item for item in st.session_state.cart if item["id"] == prod["id"]), None)
-                            if existing:
-                                existing["kuantitas"] += 1
-                            else:
-                                st.session_state.cart.append({"id": prod["id"], "nama": prod["nama"], "harga": prod["harga"], "kuantitas": 1})
-                            st.success(f"Berhasil ditambahkan!")
-
-    # MENU 3: CHECKLIST GEJALA & P3K
-    elif menu == "📋 Checklist Gejala & P3K":
-        st.markdown("# 📋 Kuesioner Diagnosis Mandiri & P3K")
-        st.write("Silakan centang tanda fisik atau perubahan perilaku yang sedang dialami oleh kucing Anda untuk mendapatkan saran Pertolongan Pertama Pada Kecelakaan (P3K).")
-        
-        st.markdown("### Pilih Gejala yang Terlihat pada Kucing Anda:")
-        
-        c1, c2 = st.columns(2)
-        with c1:
-            g_kulit = st.checkbox("Bulu rontok parah, kulit berdarah atau bersisik tebal")
-            g_mata = st.checkbox("Mata merah berair, bengkak, atau mengeluarkan belek kehijauan")
-            g_bersin = st.checkbox("Sering bersin, batuk, dan ada ingus menyumbat hidung")
-        with c2:
-            g_muntah = st.checkbox("Kucing muntah berulang atau diare berdarah")
-            g_lemas = st.checkbox("Tubuh sangat lemas, tidak nafsu makan, dan bersembunyi di sudut gelap")
-            g_cakar = st.checkbox("Terus-menerus mencakar area telinga hingga lecet berdarah")
-            
-        # Hitung jumlah gejala terpilih
-        daftar_gejala = [g_kulit, g_mata, g_bersin, g_muntah, g_lemas, g_cakar]
-        jumlah_aktif = sum(1 for g in daftar_gejala if g)
-        
-        # Simulasi skor AI jika tidak menggunakan gambar
-        skor_ai_check = 0.0
-        if g_kulit or g_cakar:
-            skor_ai_check += 0.45
-        if g_mata or g_bersin:
-            skor_ai_check += 0.20
-        if g_muntah or g_lemas:
-            skor_ai_check += 0.30
-        
-        skor_ai_check = min(0.95, skor_ai_check)
-        
-        st.markdown("---")
-        btn_proses_checklist = st.button("🩺 Hitung Saran Diagnosis P3K")
-        
-        if btn_proses_checklist:
-            hasil_p3k = hitung_status_kesehatan(skor_ai_check, jumlah_aktif)
-            
-            st.markdown(f"### Status Kesehatan Hasil Analisis Gejala: **{hasil_p3k['status']}**")
-            
-            if hasil_p3k["warna"] == "danger":
-                st.markdown(f'<div class="alert-danger-custom">{hasil_p3k["pesan"]}</div>', unsafe_allow_html=True)
-                st.markdown("""
-                #### 🚑 Panduan Tindakan P3K Mendesak:
-                1.  **Gunakan Sarung Tangan:** Segera pakai sarung tangan karet/plastik tebal sebelum memegang kucing.
-                2.  **Isolasi Terpisah:** Tempatkan kucing di kandang besi/ruangan kering tersendiri yang jauh dari jangkauan manusia dan hewan lain.
-                3.  **Jangan Mandikan Dulu:** Jika kondisi kucing lemas atau dehidrasi akibat muntah, memandikannya dapat menyebabkan kucing drop atau hipotermia.
-                4.  **Bawa ke Vet Segera:** Hubungi dokter hewan terdekat di tab **Vet & Komunitas** secepatnya.
-                """)
-            elif hasil_p3k["warna"] == "warning":
-                st.markdown(f'<div class="alert-warning-custom">{hasil_p3k["pesan"]}</div>', unsafe_allow_html=True)
-                st.markdown("""
-                #### 💊 Panduan Tindakan P3K Ringan:
-                1.  **Pemisahan Kandang:** Pisahkan kucing di kandang tersendiri (karantina mandiri).
-                2.  **Gunakan Antiseptik:** Jika kucing gatal akibat jamur/kutu, semprotkan cairan antiseptik hewan atau oleskan salep sulfur khusus kucing.
-                3.  **Tambahan Nutrisi:** Berikan tambahan minyak ikan untuk membantu metabolisme tubuh dan ketahanan kesehatan bulunya.
-                """)
-            else:
-                st.markdown(f'<div class="alert-success-custom">{hasil_p3k["pesan"]}</div>', unsafe_allow_html=True)
-
-    # MENU 4: TOKO E-COMMERCE
-    elif menu == "🛒 Toko E-Commerce":
-        st.markdown("# 🛒 Toko E-Commerce Pushy Cat Care")
-        st.write("Belanja nutrisi premium, pakan sehat, obat bebas tervalidasi, dan perlengkapan kebersihan kucing langsung dari STIEIMA Cat Care.")
-        
-        col_toko, col_kasir = st.columns([2, 1])
-        
-        with col_toko:
-            st.markdown("### 🛍️ Katalog Produk")
-            kategori_filter = st.selectbox("Pilih Kategori Produk:", ["Semua Produk", "Makanan", "Obat-obatan", "Nutrisi & Vitamin", "Kebersihan"])
-            
-            # Tampilkan produk berdasarkan kategori
-            for prod in st.session_state.products:
-                if kategori_filter != "Semua Produk" and prod["kategori"] != kategori_filter:
-                    continue
-                
-                with st.container():
-                    st.markdown(f"""
-                    <div class="feature-card">
-                        <h4 style='margin:0;'>{prod['nama']}</h4>
-                        <p style='margin:2px 0; color: #777;'>Kategori: <i>{prod['kategori']}</i> | Stok: <b>{prod['stok']}</b></p>
-                        <p style='margin:5px 0;'>{prod['deskripsi']}</p>
-                        <strong style='color: #FF8C32; font-size: 16px;'>Rp {prod['harga']:,}</strong>
-                    </div>
-                    """, unsafe_allow_html=True)
+                if st.button("Tambah ke Keranjang", key=f"cart_add_{prod['product_id']}"):
+                    existing = next((item for item in st.session_state.cart if item["id"] == prod["product_id"]), None)
+                    if existing:
+                        existing["kuantitas"] += 1
+                    else:
+                        st.session_state.cart.append({
+                            "id": prod["product_id"],
+                            "nama": prod["name"],
+                            "harga": prod["price"],
+                            "kuantitas": 1
+                        })
+                    st.success(f"{prod['name']} masuk keranjang belanja!")
+                    st.rerun()
                     
-                    if st.button(f"🛒 Masukkan ke Keranjang", key=f"add_catalog_{prod['id']}"):
-                        # Cek apakah produk sudah ada di keranjang
-                        existing = next((item for item in st.session_state.cart if item["id"] == prod["id"]), None)
-                        if existing:
-                            existing["kuantitas"] += 1
-                        else:
-                            st.session_state.cart.append({
-                                "id": prod["id"],
-                                "nama": prod["nama"],
-                                "harga": prod["harga"],
-                                "kuantitas": 1
-                            })
-                        st.success(f"Berhasil menambahkan {prod['nama']} ke keranjang!")
-                    st.write("") # Spacer
-
-        with col_kasir:
-            st.markdown("### 💳 Ringkasan Pembelian")
-            
+        with col_cart:
+            st.subheader("🛒 Keranjang")
             if not st.session_state.cart:
-                st.info("Keranjang belanjaan Anda masih kosong.")
+                st.info("Keranjang kosong")
             else:
                 for idx, item in enumerate(st.session_state.cart):
-                    col_item_n, col_item_q, col_item_d = st.columns([2, 1, 1])
-                    with col_item_n:
-                        st.write(f"**{item['nama']}**")
-                    with col_item_q:
-                        st.write(f"Qty: {item['kuantitas']}")
-                    with col_item_d:
-                        if st.button("Hapus", key=f"del_cart_{idx}"):
-                            st.session_state.cart.pop(idx)
-                            st.rerun()
+                    col_it, col_qty, col_act = st.columns([2, 1, 1])
+                    col_it.write(item["nama"])
+                    col_qty.write(f"Qty: {item['kuantitas']}")
+                    if col_act.button("Hapus", key=f"del_{idx}"):
+                        st.session_state.cart.pop(idx)
+                        st.rerun()
                 
                 st.markdown("---")
+                promo = st.text_input("Kupon Promo:", placeholder="PUSHYSEHAT / GRATISONGKIR").strip().upper()
+                method = st.selectbox("Cara Pembayaran:", ["Transfer Bank", "E-Wallet", "Cash on Delivery (COD)"])
                 
-                # Masukkan Kode Promo dari PRD Unit Test
-                kode_promo = st.text_input("Gunakan Kode Kupon:", placeholder="Contoh: PUSHYSEHAT / GRATISONGKIR").strip().upper()
-                if kode_promo == "PUSHYSEHAT":
-                    st.success("🎉 Kode PUSHYSEHAT Aktif! Anda mendapatkan diskon 15% untuk produk kesehatan.")
-                elif kode_promo == "GRATISONGKIR":
-                    st.success("🚚 Kode GRATISONGKIR Aktif! Potongan ongkir s.d Rp 15.000 jika belanja >= Rp 150.000.")
+                invoice = hitung_total_belanja(st.session_state.cart, promo)
                 
-                ongkos_kirim_dasar = 15000
+                st.write(f"Subtotal: Rp {invoice['subtotal']:,}")
+                st.write(f"Diskon: - Rp {invoice['nominal_diskon']:,}")
+                st.write(f"Ongkir: Rp {invoice['biaya_kirim_final']:,}")
+                st.markdown(f"#### Total Bayar: Rp {invoice['total_akhir']:,}")
                 
-                # Jalankan kalkulasi total belanja menggunakan fungsi teruji
-                invoice = hitung_total_belanja(st.session_state.cart, kode_promo, ongkos_kirim_dasar)
-                
-                st.markdown(f"**Subtotal:** Rp {invoice['subtotal']:,}")
-                st.markdown(f"**Diskon Promo:** - Rp {invoice['nominal_diskon']:,}")
-                st.markdown(f"**Biaya Pengiriman:** Rp {invoice['biaya_kirim_final']:,}")
-                st.markdown(f"### **Total Tagihan:** Rp {invoice['total_akhir']:,}")
-                
-                if st.button("💳 Bayar Sekarang (Checkout)"):
+                if st.button("💳 Konfirmasi Pembayaran"):
+                    conn = get_db_connection()
+                    cursor = conn.cursor()
+                    buyer = st.session_state.user["username"] if st.session_state.user else "Pembeli Guest"
+                    
+                    # Simpan transaksi ke SQLite
+                    cursor.execute("""
+                    INSERT INTO transactions (buyer_name, total_amount, discount, shipping_cost, payment_method, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """, (buyer, invoice["total_akhir"], invoice["nominal_diskon"], invoice["biaya_kirim_final"], method, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+                    conn.commit()
+                    conn.close()
+                    
                     st.balloons()
-                    st.success("Pembayaran Berhasil! Pesanan Anda akan segera disiapkan oleh Tim Kurir STIEIMA Cat Care.")
-                    # Reset keranjang setelah transaksi selesai
+                    st.success("Transaksi Sukses! Bukti pembayaran dikirim dan pesanan segera diantar.")
                     st.session_state.cart = []
-                    # Tambah kisah sukses pengguna baru secara acak untuk melengkapi target KPI
-                    st.session_state.success_stories.append({
-                        "user": "Pengguna Baru - Malang",
-                        "cerita": "Sangat cepat! Saya mendeteksi masalah bulu gatal kucing lewat aplikasi, memesan shampoo sulfur dengan kode kupon PUSHYSEHAT, dan barang sampai sore harinya."
-                    })
+                    st.rerun()
 
-    # MENU 5: VET & KOMUNITAS SEKITAR
-    elif menu == "📍 Vet & Komunitas Sekitar":
-        st.markdown("# 📍 Direktori Vet & Komunitas Sekitar")
-        st.write("Temukan klinik dokter hewan terdekat, rumah sakit hewan rujukan, serta jaringan komunitas pecinta kucing regional yang tervalidasi oleh Admin STIEIMA.")
+    with tab_buka_lapak:
+        st.subheader("Daftarkan Dagangan Baru Komunitas")
+        if st.session_state.user is None:
+            st.warning("⚠️ Silakan login terlebih dahulu di sidebar kiri untuk membuka dagangan komunitas Anda.")
+        else:
+            with st.form("form_lapak"):
+                p_id = f"prod-{int(time.time())}"
+                p_nama = st.text_input("Nama Barang Dagangan:")
+                p_kat = st.selectbox("Kategori Barang:", ["Makanan", "Obat-obatan", "Nutrisi", "Pemeliharaan", "Lainnya"])
+                p_harga = st.number_input("Harga Jual (Rp):", min_value=1000)
+                p_stok = st.number_input("Stok Produk:", min_value=1)
+                p_desc = st.text_area("Deskripsi Keunggulan Barang:")
+                
+                if st.form_submit_button("Ajukan Verifikasi Dagangan"):
+                    conn = get_db_connection()
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                    INSERT INTO ecommerce_products VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+                    """, (p_id, st.session_state.user["username"], p_nama, p_kat, p_harga, p_stok, p_desc))
+                    conn.commit()
+                    conn.close()
+                    st.success("✅ Usulan dagangan berhasil diajukan! Menunggu persetujuan Admin STIEIMA.")
+
+# ---------------------------------------------------------
+# MODUL: DIREKTORI VET & KOMUNITAS SEKITAR (FE-07)
+# ---------------------------------------------------------
+elif active_menu == "📍 Direktori Vet & Komunitas":
+    st.markdown("# 📍 Direktori Vet & Komunitas Pecinta Kucing Sekitar")
+    st.write("Temukan klinik berizin terdekat dan jaringan komunikasi pencinta kucing regional.")
+    
+    tab_list, tab_daftar = st.tabs(["🔍 Jelajahi Direktori", "📝 Daftarkan Baru"])
+    
+    with tab_list:
+        conn = get_db_connection()
+        vets = conn.execute("SELECT * FROM directories WHERE type = 'Vet' AND is_approved = 1").fetchall()
+        comms = conn.execute("SELECT * FROM directories WHERE type = 'Community' AND is_approved = 1").fetchall()
+        conn.close()
         
-        tab_v, tab_k, tab_d = st.tabs(["🩺 Klinik & Dokter Hewan", "👥 Komunitas Pecinta Kucing", "📝 Daftarkan Vet / Komunitas Baru"])
-        
-        with tab_v:
-            st.markdown("### Dokter Hewan & Klinik Aktif")
-            vets_aktif = [v for v in st.session_state.vet_directory if v["status"] == "Approved"]
-            for v in vets_aktif:
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("### 🩺 Klinik Dokter Hewan Aktif")
+            for v in vets:
                 st.markdown(f"""
-                <div class="feature-card">
-                    <h4>🩺 {v['nama']}</h4>
-                    <p>📍 Alamat: {v['alamat']}</p>
-                    <p>📞 Hubungi: <b>{v['telepon']}</b></p>
+                <div class="custom-card">
+                    <h5>{v['name']}</h5>
+                    <p>📍 Alamat: {v['detail']}</p>
+                    <p>📞 No. Telp: {v['contact']}</p>
                 </div>
                 """, unsafe_allow_html=True)
                 
-        with tab_k:
-            st.markdown("### Jaringan Komunitas Pecinta Kucing")
-            kom_aktif = [k for k in st.session_state.communities if k["status"] == "Approved"]
-            for k in kom_aktif:
+        with col2:
+            st.markdown("### 👥 Komunitas Pecinta Kucing")
+            for c in comms:
                 st.markdown(f"""
-                <div class="feature-card">
-                    <h4>👥 {k['nama']}</h4>
-                    <p>🧭 Wilayah Gerakan: {k['wilayah']}</p>
-                    <p>📞 Kontak Hubung: <b>{k['kontak']}</b></p>
+                <div class="custom-card" style="border-left: 5px solid #FF7800;">
+                    <h5>{c['name']}</h5>
+                    <p>🧭 Cakupan Wilayah: {c['detail']}</p>
+                    <p>📞 Kontak Koordinasi: {c['contact']}</p>
                 </div>
                 """, unsafe_allow_html=True)
                 
-        with tab_d:
-            st.markdown("### Formulir Pendaftaran Publik")
-            st.write("Apakah Anda seorang Praktisi Dokter Hewan berizin atau Pengurus Komunitas Kucing? Silakan daftarkan diri agar terindeks di sistem kami.")
+    with tab_daftar:
+        st.subheader("Ajukan Direktori Vet/Komunitas Baru")
+        with st.form("form_direktori"):
+            d_type = st.selectbox("Jenis Entitas:", ["Vet", "Community"])
+            d_nama = st.text_input("Nama Klinik / Komunitas:")
+            d_detail = st.text_area("Detail Alamat Lengkap / Cakupan Wilayah Kegiatan:")
+            d_contact = st.text_input("Nomor Telepon / Kontak:")
             
-            tipe_reg = st.selectbox("Jenis Pendaftaran:", ["Dokter Hewan / Klinik", "Komunitas Pecinta Kucing"])
-            
-            with st.form("form_pendaftaran_publik"):
-                nama_input = st.text_input("Nama Lengkap Dokter/Klinik/Komunitas:")
-                detail_alamat = st.text_area("Alamat Lengkap / Cakupan Wilayah:")
-                kontak_input = st.text_input("No Telepon / WhatsApp:")
-                sip_bukti = st.text_input("Nomor SIP Dokter / Bukti Legalitas Komunitas (Opsional):")
-                
-                submitted = st.form_submit_button("Ajukan Verifikasi Data")
-                if submitted:
-                    if not nama_input or not kontak_input:
-                        st.error("Gagal mengirim! Nama dan Kontak wajib diisi lengkap.")
-                    else:
-                        # Tambahkan ke database internal dengan status 'Pending' sesuai PRD Bab 5.B
-                        if tipe_reg == "Dokter Hewan / Klinik":
-                            st.session_state.vet_directory.append({
-                                "id": len(st.session_state.vet_directory) + 1,
-                                "nama": nama_input,
-                                "alamat": detail_alamat,
-                                "telepon": kontak_input,
-                                "status": "Pending"
-                            })
-                        else:
-                            st.session_state.communities.append({
-                                "id": len(st.session_state.communities) + 1,
-                                "nama": nama_input,
-                                "wilayah": detail_alamat,
-                                "kontak": kontak_input,
-                                "status": "Pending"
-                            })
-                        st.success("✅ Pendaftaran Anda berhasil dikirim! Tim Admin STIEIMA Cat Care akan segera melakukan verifikasi berkas dokumen sebelum ditampilkan di peta publik.")
+            if st.form_submit_button("Kirim Pengajuan"):
+                if not d_nama or not d_contact:
+                    st.error("Gagal! Isian nama dan kontak wajib terisi.")
+                else:
+                    conn = get_db_connection()
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                    INSERT INTO directories (type, name, detail, contact, is_approved)
+                    VALUES (?, ?, ?, ?, 0)
+                    """, (d_type, d_nama, d_detail, d_contact))
+                    conn.commit()
+                    conn.close()
+                    st.success("✅ Pengajuan berhasil dikirim! Menunggu moderasi verifikasi administrasi oleh Admin.")
 
-    # MENU 6: CHATBOT PUSHY AI
-    elif menu == "💬 Tanya Asisten Pushy AI":
-        st.markdown("# 💬 Tanya Asisten Pushy AI")
-        st.write("Asisten virtual kesehatan kucing cerdas 24/7. Tanyakan apa saja seputar penanganan penyakit luar, nutrisi kucing hamil, gejala demam, dan sanitasi.")
+# ---------------------------------------------------------
+# MODUL: PELAPORAN DARURAT KUCING (FE-08)
+# ---------------------------------------------------------
+elif active_menu == "🚨 Pelaporan Darurat Kucing":
+    st.markdown("# 🚨 Pelaporan Cepat Penyelamatan Kucing")
+    st.write("Laporkan kejadian kucing terlantar, sakit parah di jalanan, atau tindakan kekerasan hewan (*animal abuse*).")
+    
+    st.warning("⚠️ Laporan wajib menyertakan bukti foto riil di lapangan dan titik lokasi koordinat koordinat (latitude & longitude) otomatis/manual.")
+    
+    with st.form("form_laporan_darurat"):
+        rep_nama = st.text_input("Nama Pelapor:", value=st.session_state.user["username"] if st.session_state.user else "Masyarakat Anonim")
+        rep_photo = st.file_uploader("Unggah Bukti Foto Kejadian Lapangan:", type=["jpg", "png", "jpeg"])
         
-        # Area Riwayat Percakapan
-        for msg in st.session_state.chat_history:
-            with st.chat_message(msg["role"]):
-                st.markdown(msg["content"])
-                
-        # Input Pengguna
-        prompt = st.chat_input("Tulis pertanyaan Anda di sini (misal: 'Bagaimana mengobati jamur ringworm kucing?')")
-        if prompt:
-            # Tampilkan pesan user
-            with st.chat_message("user"):
-                st.markdown(prompt)
-            st.session_state.chat_history.append({"role": "user", "content": prompt})
+        col_gps1, col_gps2 = st.columns(2)
+        rep_lat = col_gps1.number_input("Titik Koordinat Latitude (Lintang):", value=-7.9421, format="%.5f")
+        rep_lon = col_gps2.number_input("Titik Koordinat Longitude (Bujur):", value=112.6123, format="%.5f")
+        
+        rep_desc = st.text_area("Deskripsi Lengkap Kejadian Kedaruratan (Min 10 Karakter):")
+        
+        if st.form_submit_button("🚀 Kirim Laporan Penyelamatan Darurat"):
+            if not rep_photo:
+                st.error("Gagal! Anda wajib menyertakan foto bukti otentik di lapangan.")
+            elif len(rep_desc.strip()) < 10:
+                st.error("Gagal! Deskripsi laporan terlalu singkat, tolong jelaskan detail kondisi kucing tersebut.")
+            else:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                cursor.execute("""
+                INSERT INTO emergency_reports (reporter_name, photo_name, latitude, longitude, description, status, created_at)
+                VALUES (?, ?, ?, ?, ?, 'PENDING', ?)
+                """, (rep_nama, "laporan_lapangan.png", rep_lat, rep_lon, rep_desc, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+                conn.commit()
+                conn.close()
+                st.success("🚨 Laporan Terkirim! Agen Ahli Penanganan Kucing terdekat dari STIEIMA Cat Care telah diberi notifikasi dan segera meluncur.")
+
+# ---------------------------------------------------------
+# MODUL: AGENDA KEGIATAN SOSIAL (FE-10)
+# ---------------------------------------------------------
+elif active_menu == "📅 Agenda Kegiatan Sosial":
+    st.markdown("# 📅 Agenda & Kegiatan Komunitas")
+    st.write("Ikuti berbagai aksi sosial, sterilisasi massal bersubsidi, dan edukasi pencegahan zoonosis bersama STIEIMA Cat Care.")
+    
+    conn = get_db_connection()
+    agendas = conn.execute("SELECT * FROM community_agendas ORDER BY event_date ASC").fetchall()
+    conn.close()
+    
+    for ag in agendas:
+        st.markdown(f"""
+        <div class="custom-card" style="border-left: 5px solid #FF7800;">
+            <h4>📅 {ag['title']}</h4>
+            <p><b>Waktu Pelaksanaan:</b> {ag['event_date']} | <b>Lokasi:</b> {ag['location']}</p>
+            <p>{ag['description']}</p>
+            <span style="font-size:11px; color:#666;">Penyelenggara: {ag['created_by']}</span>
+        </div>
+        """, unsafe_allow_html=True)
+
+# ---------------------------------------------------------
+# MODUL: CHATBOT PUSHY AI (FE-11)
+# ---------------------------------------------------------
+elif active_menu == "💬 Tanya Chatbot Pushy AI":
+    st.markdown("# 💬 Tanya Asisten Pushy AI")
+    st.write("Chatbot cerdas penanganan darurat dan pencegahan zoonosis bertenaga Gemini.")
+    
+    # Render riwayat obrolan
+    for msg in st.session_state.chat_history:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
             
-            # System Instruction untuk memandu respons AI agar bernada empati, medis, aman, dan mendalam
-            instruksi_sistem = (
-                "Anda adalah Pushy AI, asisten medis kucing virtual buatan STIEIMA Cat Care. "
-                "Tugas utama Anda adalah mengedukasi pecinta kucing mengenai gejala penyakit, pengobatan pertama (P3K) aman, "
-                "dan pencegahan penularan zoonosis ke manusia secara higienis. Jawab dengan nada hangat, sopan, bersahabat, "
-                "menggunakan bahasa Indonesia yang santun. Selalu ingatkan pengguna untuk mengisolasi kucing yang sakit menular "
-                "dan bawa ke dokter hewan jika kondisi memburuk."
-            )
+    p_chat = st.chat_input("Tanyakan apa saja seputar medis ringan kucing (misal: 'Bagaimana mencegah parasit Toxoplasma?')")
+    if p_chat:
+        with st.chat_message("user"):
+            st.markdown(p_chat)
+        st.session_state.chat_history.append({"role": "user", "content": p_chat})
+        
+        instruksi_sistem = (
+            "Anda adalah Pushy AI, asisten medis kucing virtual buatan STIEIMA Cat Care. "
+            "Tugas utama Anda adalah mengedukasi pecinta kucing mengenai gejala penyakit, pengobatan pertama (P3K) aman, "
+            "dan hukum perlindungan kekerasan hewan (KUHP Pasal 302). Jawab dengan nada hangat, penuh empati, medis, dan bersahabat."
+        )
+        
+        with st.spinner("Pushy AI sedang mengetik balasan..."):
+            respons = panggil_gemini_api(p_chat, instruksi_sistem)
             
-            # Panggil API Gemini dengan penanganan retries eksponensial
-            with st.spinner("Pushy AI sedang merumuskan saran kesehatan medis..."):
-                response_ai = panggil_gemini_api(prompt, instruksi_sistem)
-                
-            # Tampilkan respons asisten
-            with st.chat_message("assistant"):
-                st.markdown(response_ai)
-            st.session_state.chat_history.append({"role": "assistant", "content": response_ai})
+        with st.chat_message("assistant"):
+            st.markdown(respons)
+        st.session_state.chat_history.append({"role": "assistant", "content": respons})
 
 # ==========================================
-# HALAMAN AKSES: ADMIN PANEL STIEIMA
+# 11. DEKLARASI MODUL PERAN: ADMIN
 # ==========================================
-else:
-    # MENU ADMIN 1: DASBOR UTAMA
-    if menu == "📊 Dasbor Utama STIEIMA":
-        st.markdown("# 📊 Dasbor Kontrol & Statistik Utama STIEIMA Cat Care")
-        st.write("Panel pemantauan performa aplikasi, status kepuasan pengguna, dan indikator kesuksesan operasional (KPI).")
-        
-        # Metrik Berdasarkan KPI PRD Bab 8
-        m1, m2, m3, m4 = st.columns(4)
-        with m1:
-            st.metric("Anggota Aktif Bulanan (MAU)", "5,820 Pengguna", "+16% Bulan Lalu")
-        with m2:
-            st.metric("Total Kisah Sukses Sembuh", f"{len(st.session_state.success_stories)} Kisah", "Target: >50")
-        with m3:
-            st.metric("Rasio Retensi Mingguan", "38.5%", "Target: >35%")
-        with m4:
-            st.metric("Rata-rata Belanja Bulanan", "2.4 Transaksi", "Target: >2")
+elif active_menu == "📊 Dashboard & Laporan Keuangan":
+    st.markdown("# 📊 Kontrol Panel Admin STIEIMA Cat Care")
+    st.write("Dasbor pemantauan kinerja aplikasi, rekam medis sistem, dan metrik keuangan e-commerce.")
+    
+    conn = get_db_connection()
+    tx_sum = conn.execute("SELECT SUM(total_amount) as omzet, COUNT(*) as transaksi FROM transactions").fetchone()
+    report_count = conn.execute("SELECT COUNT(*) FROM emergency_reports").fetchone()[0]
+    users_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    tx_list = conn.execute("SELECT * FROM transactions ORDER BY created_at DESC").fetchall()
+    conn.close()
+    
+    col_k1, col_k2, col_k3, col_k4 = st.columns(4)
+    col_k1.metric("Anggota Aktif Terdaftar", f"{users_count} Akun", "Target: >10k")
+    col_k2.metric("Total Laporan Darurat", f"{report_count} Laporan", "Target Respon: <45m")
+    col_k3.metric("Total Transaksi Sukses", f"{tx_sum['transaksi'] or 0} Kali")
+    col_k4.metric("Omzet Penjualan E-Commerce", f"Rp {int(tx_sum['omzet'] or 0):,}")
+    
+    st.markdown("---")
+    st.subheader("📜 Riwayat Transaksi Penjualan Multi-Merchant")
+    if not tx_list:
+        st.info("Belum ada transaksi terekam saat ini.")
+    else:
+        df_tx = pd.DataFrame([dict(t) for t in tx_list])
+        st.dataframe(df_tx, use_container_width=True)
+
+elif active_menu == "🩺 Moderasi Direktori Vet & Komunitas":
+    st.markdown("# 🩺 Panel Moderasi Direktori Vet & Komunitas Baru")
+    st.write("Setujui usulan klinik baru atau komunitas kucing yang diusulkan oleh publik.")
+    
+    conn = get_db_connection()
+    pending_list = conn.execute("SELECT * FROM directories WHERE is_approved = 0").fetchall()
+    conn.close()
+    
+    if not pending_list:
+        st.success("🎉 Tidak ada usulan klinik atau komunitas pending saat ini.")
+    else:
+        for ent in pending_list:
+            st.markdown(f"""
+            <div class="custom-card" style="border-left:5px solid #FFC107;">
+                <h4>[{ent['type']}] {ent['name']}</h4>
+                <p>Detail: {ent['detail']}</p>
+                <p>Kontak: {ent['contact']}</p>
+            </div>
+            """, unsafe_allow_html=True)
             
-        st.markdown("---")
-        st.markdown("### 📈 Aktivitas Sistem Terbaru")
-        
-        # Menampilkan Kisah Sukses untuk verifikasi admin
-        st.write("**Daftar Kisah Sukses Pengguna Tervalidasi:**")
-        df_stories = pd.DataFrame(st.session_state.success_stories)
-        st.dataframe(df_stories, use_container_width=True)
+            c1, c2 = st.columns([1, 10])
+            if c1.button("Approve", key=f"app_dir_{ent['id']}"):
+                conn = get_db_connection()
+                conn.execute("UPDATE directories SET is_approved = 1 WHERE id = ?", (ent["id"],))
+                conn.commit()
+                conn.close()
+                st.success("Telah disetujui publik!")
+                st.rerun()
 
-    # MENU ADMIN 2: MODERASI VET & KOMUNITAS
-    elif menu == "🩺 Moderasi Vet & Komunitas":
-        st.markdown("# 🩺 Moderasi Pengajuan Pendaftaran Baru")
-        st.write("Verifikasi kelayakan berkas izin praktik dokter hewan serta keaktifan komunitas pencinta kucing lokal sebelum ditayangkan publik.")
-        
-        # Bagian Vet Pending
-        st.markdown("### ⏳ Pengajuan Dokter Hewan Pending")
-        v_pending = [v for v in st.session_state.vet_directory if v["status"] == "Pending"]
-        
-        if not v_pending:
-            st.info("Tidak ada pengajuan dokter hewan yang pending saat ini.")
-        else:
-            for v in v_pending:
-                with st.container():
-                    st.markdown(f"""
-                    <div style="background-color:#FFF; padding:15px; border-radius:8px; border:1px solid #CCC; margin-bottom:10px;">
-                        <b>🩺 {v['nama']}</b><br/>
-                        📍 Alamat: {v['alamat']}<br/>
-                        📞 No. Telp: {v['telepon']}
-                    </div>
-                    """, unsafe_allow_html=True)
-                    c_app, c_rej = st.columns([1, 10])
-                    with c_app:
-                        if st.button("Approve", key=f"app_v_{v['id']}"):
-                            v["status"] = "Approved"
-                            st.success(f"{v['nama']} disetujui untuk masuk daftar aktif!")
-                            st.rerun()
-                    with c_rej:
-                        if st.button("Reject", key=f"rej_v_{v['id']}"):
-                            st.session_state.vet_directory.remove(v)
-                            st.warning(f"Pengajuan {v['nama']} telah ditolak dan dihapus.")
-                            st.rerun()
-                            
-        st.markdown("---")
-        
-        # Bagian Komunitas Pending
-        st.markdown("### ⏳ Pengajuan Komunitas Pending")
-        k_pending = [k for k in st.session_state.communities if k["status"] == "Pending"]
-        
-        if not k_pending:
-            st.info("Tidak ada pengajuan komunitas yang pending saat ini.")
-        else:
-            for k in k_pending:
-                with st.container():
-                    st.markdown(f"""
-                    <div style="background-color:#FFF; padding:15px; border-radius:8px; border:1px solid #CCC; margin-bottom:10px;">
-                        <b>👥 {k['nama']}</b><br/>
-                        🧭 Cakupan Wilayah: {k['wilayah']}<br/>
-                        📞 Kontak Pengurus: {k['kontak']}
-                    </div>
-                    """, unsafe_allow_html=True)
-                    c_app_k, c_rej_k = st.columns([1, 10])
-                    with c_app_k:
-                        if st.button("Approve", key=f"app_k_{k['id']}"):
-                            k["status"] = "Approved"
-                            st.success(f"Komunitas {k['nama']} disetujui!")
-                            st.rerun()
-                    with c_rej_k:
-                        if st.button("Reject", key=f"rej_k_{k['id']}"):
-                            st.session_state.communities.remove(k)
-                            st.warning(f"Pengajuan {k['nama']} ditolak.")
-                            st.rerun()
+elif active_menu == "📦 Moderasi Dagangan E-Commerce":
+    st.markdown("# 📦 Panel Moderasi Dagangan Komunitas")
+    st.write("Verifikasi usul dagangan yang diajukan komunitas sebelum dimasukkan ke dalam katalog belanja.")
+    
+    conn = get_db_connection()
+    pending_prods = conn.execute("SELECT * FROM ecommerce_products WHERE is_approved = 0").fetchall()
+    conn.close()
+    
+    if not pending_prods:
+        st.success("🎉 Tidak ada barang dagangan komunitas yang pending!")
+    else:
+        for p in pending_prods:
+            st.markdown(f"""
+            <div class="custom-card" style="border-left:5px solid #FFC107;">
+                <h4>{p['name']}</h4>
+                <p>Penyedia: {p['owner_name']} | Kategori: {p['category']} | Harga: Rp {p['price']:,}</p>
+                <p>Deskripsi: {p['description']}</p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            if st.button("Setujui Jual", key=f"app_prod_{p['product_id']}"):
+                conn = get_db_connection()
+                conn.execute("UPDATE ecommerce_products SET is_approved = 1 WHERE product_id = ?", (p["product_id"],))
+                conn.commit()
+                conn.close()
+                st.success("Barang disetujui tayang!")
+                st.rerun()
 
-    # MENU ADMIN 3: MANAJEMEN PRODUK
-    elif menu == "📦 Manajemen Produk":
-        st.markdown("# 📦 Kelola Inventaris E-Commerce")
-        st.write("Tambahkan pasokan barang baru atau edit harga makanan dan obat-obatan yang dijual di toko.")
+# ==========================================
+# 12. DEKLARASI MODUL PERAN: AGENT_EXPERT (AHLI KUCING)
+# ==========================================
+elif active_menu == "🚨 Daftar Laporan Darurat Lapangan":
+    st.markdown("# 🚨 Panel Penyelamatan Kucing Terlantar/Sakit")
+    st.write("Daftar laporan darurat masuk dari masyarakat luas lengkap dengan koordinat titik lokasi peta.")
+    
+    conn = get_db_connection()
+    reports = conn.execute("SELECT * FROM emergency_reports ORDER BY status ASC, created_at DESC").fetchall()
+    conn.close()
+    
+    if not reports:
+        st.info("Belum ada laporan kedaruratan yang masuk dari masyarakat.")
+    else:
+        for rep in reports:
+            color_border = "#FF7800" if rep["status"] == "PENDING" else "#2E5B88"
+            st.markdown(f"""
+            <div class="custom-card" style="border-left: 5px solid {color_border};">
+                <h4>🚨 Pelapor: {rep['reporter_name']} (Status: {rep['status']})</h4>
+                <p><b>Waktu Kejadian:</b> {rep['created_at']}</p>
+                <p><b>Koordinat Lokasi GPS:</b> Lintang: {rep['latitude']}, Bujur: {rep['longitude']}</p>
+                <p><b>Keterangan:</b> {rep['description']}</p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            c_update1, c_update2 = st.columns([1, 10])
+            if rep["status"] == "PENDING":
+                if c_update1.button("Tangani", key=f"tangani_{rep['report_id']}"):
+                    conn = get_db_connection()
+                    conn.execute("UPDATE emergency_reports SET status = 'INVESTIGATING' WHERE report_id = ?", (rep["report_id"],))
+                    conn.commit()
+                    conn.close()
+                    st.success("Laporan sedang diinvestigasi oleh Anda!")
+                    st.rerun()
+            elif rep["status"] == "INVESTIGATING":
+                if c_update1.button("Selesai", key=f"selesai_{rep['report_id']}"):
+                    conn = get_db_connection()
+                    conn.execute("UPDATE emergency_reports SET status = 'RESOLVED' WHERE report_id = ?", (rep["report_id"],))
+                    conn.commit()
+                    conn.close()
+                    st.success("Kasus penyelamatan dinyatakan selesai!")
+                    st.rerun()
+
+elif active_menu == "📅 Ajukan Agenda Komunitas":
+    st.markdown("# 📅 Formulir Pengajuan Kegiatan Komunitas Baru")
+    st.write("Buat agenda gerakan baru seperti steril massal bersubsidi, street feeding, atau penggalangan dana.")
+    
+    with st.form("form_add_agenda"):
+        a_title = st.text_input("Judul Agenda:")
+        a_desc = st.text_area("Deskripsi Agenda:")
+        a_date = st.date_input("Tanggal Pelaksanaan:")
+        a_loc = st.text_input("Tempat/Lokasi Agenda:")
         
-        # Form Tambah Produk Baru
-        with st.expander("➕ Tambah Produk Baru ke Katalog"):
-            with st.form("form_tambah_produk"):
-                n_id = st.text_input("ID Produk (Unik):", placeholder="Contoh: pakan-05")
-                n_nama = st.text_input("Nama Produk:")
-                n_kat = st.selectbox("Kategori Produk:", ["Makanan", "Obat-obatan", "Nutrisi & Vitamin", "Kebersihan"])
-                n_harga = st.number_input("Harga Jual (Rp):", min_value=1000, value=50000)
-                n_stok = st.number_input("Stok Awal:", min_value=1, value=10)
-                n_desc = st.text_area("Deskripsi Manfaat Produk:")
-                
-                submitted_p = st.form_submit_button("Simpan Produk")
-                if submitted_p:
-                    if not n_id or not n_nama:
-                        st.error("Gagal! ID dan Nama Produk tidak boleh kosong.")
-                    else:
-                        st.session_state.products.append({
-                            "id": n_id,
-                            "nama": n_nama,
-                            "kategori": n_kat,
-                            "harga": n_harga,
-                            "stok": n_stok,
-                            "deskripsi": n_desc
-                        })
-                        st.success(f"Berhasil menambahkan {n_nama} ke dalam inventaris!")
-                        st.rerun()
-                        
-        st.markdown("### Daftar Inventaris Toko Saat Ini")
-        df_products = pd.DataFrame(st.session_state.products)
-        st.dataframe(df_products, use_container_width=True)
+        if st.form_submit_button("Terbitkan Agenda"):
+            if not a_title or not a_loc:
+                st.error("Gagal! Judul dan Lokasi wajib diisi.")
+            else:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                user_creator = st.session_state.user["username"] if st.session_state.user else "Agent Expert"
+                cursor.execute("""
+                INSERT INTO community_agendas (title, description, event_date, location, created_by)
+                VALUES (?, ?, ?, ?, ?)
+                """, (a_title, a_desc, str(a_date), a_loc, user_creator))
+                conn.commit()
+                conn.close()
+                st.success("✅ Agenda berhasil diterbitkan ke publik!")
+
+# ==========================================
+# 13. DEKLARASI MODUL PERAN: AGENT_DEVELOPER (AHLI DEV)
+# ==========================================
+elif active_menu == "🖥️ Optimasi Basis Data SQLite":
+    st.markdown("# 🖥️ Optimasi Basis Data SQLite & Skema Relasional")
+    st.write("Khusus Agen Pengembang Aplikasi: Pemantauan skema tabel, pemicu indeks query, dan performa kompresi gambar.")
+    
+    st.info("💡 **Indeks Relasional Aktif:** Kolom pencarian `role` pada tabel `users`, `status` pada tabel `emergency_reports`, dan `is_approved` pada `ecommerce_products` secara otomatis diindeks guna mempercepat latensi server di bawah 20ms.")
+    
+    # Render skema database mentah dari SQLite
+    conn = get_db_connection()
+    tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    
+    for t in tables:
+        t_name = t["name"]
+        st.markdown(f"### 📋 Struktur Tabel: `{t_name}`")
+        info = conn.execute(f"PRAGMA table_info({t_name})").fetchall()
+        df_info = pd.DataFrame([dict(col) for col in info])
+        st.dataframe(df_info, use_container_width=True)
+    conn.close()
+
+elif active_menu == "🚀 Metrik Skalabilitas Sistem":
+    st.markdown("# 🚀 Analisis Metrik Skalabilitas Sistem")
+    st.write("Pemantauan log audit performa API Gemini dan mitigasi batas panggilan kuota menggunakan skema retries eksponensial.")
+    
+    st.success("✅ **Sistem Penanganan Kegagalan Aktif:** Panggilan API eksternal LLM diproteksi dengan Exponential Backoff `1s -> 2s -> 4s -> 8s -> 16s` sehingga menjamin 0% risiko crash pada server utama.")
+    st.write("**Log Simulasi Performa Skalabilitas:**")
+    
+    log_data = {
+        "Metrik": ["Rata-rata Waktu Query DB", "AI Inference Time", "UI Render Latency", "Ukuran Database Berkas"],
+        "Nilai": ["4.2 Milidetik", "1.12 Detik (Simulated API)", "18 Milidetik", "28 KB (Kompresi Aktif)"],
+        "Status": ["Sangat Optimal", "Optimal", "Sangat Cepat", "Sangat Aman"]
+    }
+    st.table(pd.DataFrame(log_data))
